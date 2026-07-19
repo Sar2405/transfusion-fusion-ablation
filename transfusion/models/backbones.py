@@ -247,28 +247,61 @@ class ResNet50(nn.Module):
 
     def _load_pretrained(self) -> None:
         try:
+            import re
             import torchvision.models as tvm
-            tv_model = tvm.resnet50(weights=tvm.ResNet50_Weights.IMAGENET1K_V1)
-            # Map torchvision layer names → ours
-            tv_state = tv_model.state_dict()
-            # Our stem.0.block.{0,1} = torchvision conv1, bn1
+            tv_state = tvm.resnet50(
+                weights=tvm.ResNet50_Weights.IMAGENET1K_V1).state_dict()
+
+            # Translate torchvision's flat names into our ConvBnAct nesting:
+            #   conv1.*                     -> stem.0.block.0.*        (stem conv)
+            #   bn1.*                       -> stem.0.block.1.*        (stem bn)
+            #   layerX.Y.convN.*            -> layerX.Y.convN.block.0.*
+            #   layerX.Y.bnN.*              -> layerX.Y.convN.block.1.*
+            #   layerX.Y.downsample.*       -> unchanged (plain Sequential here too)
+            #   fc.*                        -> skipped (no classifier head)
+            conv_re = re.compile(r"^(layer\d\.\d+\.)conv(\d)\.(.+)$")
+            bn_re   = re.compile(r"^(layer\d\.\d+\.)bn(\d)\.(.+)$")
+
             new_state = {}
             for k, v in tv_state.items():
+                if k.startswith("fc."):
+                    continue
                 if k.startswith("conv1."):
-                    new_state[k.replace("conv1.", "stem.0.block.0.", 1)] = v
-                elif k.startswith("bn1."):
-                    new_state[k.replace("bn1.", "stem.0.block.1.", 1)] = v
-                elif k.startswith(("layer1.", "layer2.", "layer3.", "layer4.")):
+                    new_state["stem.0.block.0." + k[len("conv1."):]] = v
+                    continue
+                if k.startswith("bn1."):
+                    new_state["stem.0.block.1." + k[len("bn1."):]] = v
+                    continue
+                m = conv_re.match(k)
+                if m:
+                    new_state[f"{m.group(1)}conv{m.group(2)}.block.0.{m.group(3)}"] = v
+                    continue
+                m = bn_re.match(k)
+                if m:
+                    new_state[f"{m.group(1)}conv{m.group(2)}.block.1.{m.group(3)}"] = v
+                    continue
+                if ".downsample." in k:
                     new_state[k] = v
+                    continue
+                # anything else (shouldn't occur) is skipped
+
             missing, unexpected = self.load_state_dict(new_state, strict=False)
             import logging
-            logging.getLogger(__name__).info(
-                "Pretrained ResNet-50 loaded. Missing: %d, Unexpected: %d",
-                len(missing), len(unexpected),
-            )
+            log = logging.getLogger(__name__)
+            log.info("Pretrained ResNet-50 loaded. Missing: %d, Unexpected: %d",
+                     len(missing), len(unexpected))
+            # A correct mapping leaves ~0 missing/unexpected. Fail loudly in
+            # spirit: warn hard if the mapping regressed, since a silently
+            # random image backbone quietly costs accuracy.
+            if len(missing) > 10 or len(unexpected) > 10:
+                log.warning("Pretrained remap looks WRONG (missing=%d, "
+                            "unexpected=%d). Image backbone may be largely "
+                            "randomly initialised! First few missing: %s",
+                            len(missing), len(unexpected), missing[:5])
         except Exception as e:
             import logging
-            logging.getLogger(__name__).warning("Could not load pretrained ResNet-50: %s", e)
+            logging.getLogger(__name__).warning(
+                "Could not load pretrained ResNet-50: %s", e)
 
     def _freeze_stages(self) -> None:
         if self.frozen_stages >= 0:
