@@ -1,0 +1,14 @@
+# Core
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.23.0
+scipy>=1.9.0
+PyYAML>=6.0
+
+# nuScenes data
+nuscenes-devkit>=1.1.10
+pyquaternion>=0.9.9
+opencv-python>=4.6.0
+
+# Logging / monitoring
+tensorboard>=2.11.0
