@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+work_dirs/
+*.pth
+*.zip
+.DS_Store
