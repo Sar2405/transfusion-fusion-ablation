@@ -187,10 +187,44 @@ class NuScenesDataset(Dataset):
 
         # Scene names for the requested split
         split_scenes = set(nu_splits.train if split == "train" else nu_splits.val)
-        self.samples = [
+        candidates = [
             s for s in self.nusc.sample
             if self.nusc.get("scene", s["scene_token"])["name"] in split_scenes
         ]
+
+        # ---- Partial-data filter -------------------------------------------
+        # Partial copies of nuScenes (e.g. Kaggle re-uploads) ship the COMPLETE
+        # metadata tables but only a fraction of the sensor blobs. The tables
+        # therefore index samples whose files do not exist on disk, which would
+        # crash the dataloader mid-epoch with FileNotFoundError. Here we keep
+        # only samples whose LiDAR keyframe AND all camera keyframes are
+        # actually present. On a complete dataset this drops nothing.
+        cam_names = ["CAM_FRONT", "CAM_FRONT_RIGHT", "CAM_BACK_RIGHT",
+                     "CAM_BACK", "CAM_BACK_LEFT", "CAM_FRONT_LEFT"]
+        self.samples = []
+        dropped = 0
+        for s in candidates:
+            ok = True
+            for sensor in ["LIDAR_TOP"] + cam_names:
+                sd = self.nusc.get("sample_data", s["data"][sensor])
+                if not os.path.exists(os.path.join(self.nusc.dataroot, sd["filename"])):
+                    ok = False
+                    break
+            if ok:
+                self.samples.append(s)
+            else:
+                dropped += 1
+        import logging
+        logging.getLogger(__name__).info(
+            "NuScenesDataset[%s/%s]: kept %d samples, dropped %d with missing "
+            "sensor files%s", version, split, len(self.samples), dropped,
+            "" if dropped == 0 else " (partial dataset copy detected)")
+        if len(self.samples) == 0:
+            raise RuntimeError(
+                f"No usable samples in split '{split}': all {len(candidates)} "
+                f"indexed samples have missing sensor files under "
+                f"{self.nusc.dataroot}. Check --data-root and that samples/ "
+                f"contains the sensor blobs.")
 
     def __len__(self) -> int:
         return len(self.samples)

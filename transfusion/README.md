@@ -1,99 +1,66 @@
-# TransFusion — LiDAR-Camera Fusion for 3D Object Detection
+# TransFusion — Controlled Study of LiDAR-Camera Fusion Strategies
 
-PyTorch implementation of *TransFusion: Robust LiDAR-Camera Fusion for 3D Object
-Detection with Transformers* (Bai et al., CVPR 2022), built for the nuScenes dataset.
+PyTorch implementation of TransFusion (Bai et al., CVPR 2022) for nuScenes,
+extended with a **three-way fusion-philosophy ablation**: the fusion strategy is
+a single config switch while backbone, data pipeline, and training recipe stay
+identical across arms.
 
-## Architecture
+| `--fusion-mode` | Camera → cls | Camera → box regression | Philosophy |
+|---|---|---|---|
+| `full` (default) | yes | yes | TransFusion |
+| `cls_only` | yes | **no** (LiDAR-only) | DAL |
+| `dual_stream` | yes | via parallel LiDAR stream | DeepInteraction (+~1.05M params — report) |
 
+## Layout
 ```
-LiDAR point cloud ─► PillarFeatureNet ─► SECONDBackbone ─► BEV feature map ─┐
-                                                                            │
-                                                              Heatmap ─► 200 query seeds
-                                                                            │
-6 camera images ─► ResNet-50 ─► FPN ─► image features ──────────┐          │
-                                                                │          ▼
-                                                                │   Stage 1: LiDAR-only
-                                                                │   transformer decoder
-                                                                │          │
-                                                                │   predicted 3D centres
-                                                                │          ▼
-                                                                └─► Stage 2: LiDAR-camera
-                                                                    fusion decoder
-                                                                            │
-                                                                            ▼
-                                                          class scores + 3D boxes + velocity
+transfusion/
+├── configs/nuscenes.yaml        hyperparameters · fusion_mode · data version
+├── models/                      transfusion.py · backbones.py · head.py · loss.py
+├── data/nuscenes_dataset.py     loader · voxeliser · projections · partial-data filter
+├── utils/common.py              encodings · NMS · box decode
+└── tools/
+    ├── train.py                 AMP/DDP/OneCycleLR · --fusion-mode · per-mode work dirs
+    ├── test_pipeline.py         dataset→forward→loss→backward per mode (run this first)
+    ├── train_job.sbatch         one Slurm training job (MIG gres, qos/account triple)
+    └── launch_ablation.sh       submits 3 modes × 2 seeds = 6 jobs
 ```
 
-## Package layout
+## Key properties
+- **BEV grid is derived from geometry** (pc_range / voxel_size / out_size_factor
+  → 64×64). Do not pass `bev_h`/`bev_w`; contradicting values raise at construction.
+- **Partial-data tolerant:** samples with missing sensor files are dropped at
+  init with a logged count (complete datasets drop 0).
+- ResNet-50 loads ImageNet weights via a verified name remap — the log must say
+  `Missing: 0, Unexpected: 0`; a large count triggers a loud warning.
+- Real-data edge cases handled: NaN velocities zeroed, zero-annotation samples
+  safe through matcher and losses. DDP-safe in all three modes
+  (`find_unused_parameters=False`).
 
-| File | Contents |
-|------|----------|
-| `models/transfusion.py`   | Top-level `TransFusion` model + `predict()` inference |
-| `models/backbones.py`     | `PillarFeatureNet`, `SECONDBackbone`, `ResNet50`, `FPN`, `ImageBackbone` |
-| `models/head.py`          | `TransFusionHead` — heatmap, stage-1 LiDAR decoder, stage-2 fusion decoder |
-| `models/loss.py`          | `TransFusionLoss`, Hungarian matcher, Gaussian heatmap targets |
-| `data/nuscenes_dataset.py`| nuScenes loader, voxeliser, projection matrices, augmentation |
-| `utils/common.py`         | Positional encodings, NMS, box decoding, helpers |
-| `tools/train.py`          | Training loop: DDP, AMP, OneCycleLR, checkpointing |
-| `configs/nuscenes.yaml`   | Full configuration |
-
-## Setup
-
+## Run
 ```bash
-pip install -r requirements.txt
+pip install -r transfusion/requirements.txt
+# from the folder CONTAINING transfusion/:
+PYTHONPATH=. python transfusion/tools/test_pipeline.py --data-root /path/to/nuscenes
+PYTHONPATH=. python transfusion/tools/train.py \
+    --config transfusion/configs/nuscenes.yaml \
+    --data-root /path/to/nuscenes --fusion-mode full
 ```
+Set `data.version` in the config to match the data on disk
+(`v1.0-trainval` / `v1.0-mini`). Single-sweep by default; for sweeping set
+`point_feat_channels: 5` and extend the loader (expect ghost-arc caveats).
 
-Download nuScenes (v1.0-trainval) from https://www.nuscenes.org and point the
-config / CLI at the data root.
-
-## Training
-
+## Cluster (Slurm, MIG)
 ```bash
-# Single GPU
-python tools/train.py --config configs/nuscenes.yaml --data-root /data/nuscenes
-
-# 8 GPUs (DistributedDataParallel)
-torchrun --nproc_per_node=8 tools/train.py \
-    --config configs/nuscenes.yaml \
-    --data-root /data/nuscenes
+mkdir -p out err
+bash transfusion/tools/launch_ablation.sh     # 6 jobs on 7g.79gb slices
+squeue -u $USER
 ```
+Jobs require the site's `--partition/--qos/--account` triple (set in the sbatch).
 
-## Inference
-
-```python
-import torch
-from transfusion import TransFusion
-
-model = TransFusion(use_pillar_net=True).eval()
-detections = model.predict(
-    camera_imgs=imgs,        # (B, 6, 3, H, W)
-    voxels=voxels,           # (M, P, 4)
-    num_points=num_points,   # (M,)
-    coords=coords,           # (M, 4)  [batch, z, y, x]
-    lidar2img=lidar2img,     # (B, 6, 4, 4)
-    score_threshold=0.1,
-    nms_iou_threshold=0.2,
-)
-# detections[b] = {"scores": (K,), "labels": (K,), "boxes": (K, 10)}
-```
-
-## Box parameterisation
-
-Each box is 10 values: `[x, y, z, log_l, log_w, log_h, sin_yaw, cos_yaw, vx, vy]`,
-with x/y/z normalised to `[0, 1]` over the point-cloud range during training and
-decoded back to metres at inference.
-
-## Single-sweep vs multi-sweep
-
-`configs/nuscenes.yaml` defaults to single-sweep. For 10-sweep training:
-- set `data.num_sweeps: 10`
-- set `model.bev_in_channels: 5` (adds the Δt time channel)
-- raise `data.max_voxels_train` to 60000+
-
-See the dataset docstring for the sweep-aggregation details.
-
-## Notes for production use
-
-The pure-Python voxeliser in `nuscenes_dataset.py` is correct but slow. For real
-training throughput, replace `hard_voxelise` with the compiled voxeliser from
-`mmcv` / `spconv`, or pre-cache voxelised sweeps to disk.
+## Known limitations
+- `hard_voxelise` is pure Python (~50 ms/sample single-sweep): acceptable behind
+  ≥8 dataloader workers, replace with a vectorised/compiled voxeliser before
+  multi-sweep or if GPU utilisation sags.
+- Official NDS/mAP evaluation pipeline not yet included (in progress).
+- Box code: `[x_n, y_n, z_n, log_l, log_w, log_h, sin, cos, vx, vy]`,
+  positions normalised over pc_range, decoded at inference.

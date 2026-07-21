@@ -63,8 +63,8 @@ class TransFusion(nn.Module):
         num_lidar_decoder_layers: int   = 1,
         num_fusion_decoder_layers: int  = 1,
         dropout: float                  = 0.1,
-        bev_h: int                      = 64,
-        bev_w: int                      = 64,
+        bev_h: Optional[int]            = None,   # derived from geometry if None
+        bev_w: Optional[int]            = None,   # derived from geometry if None
         img_feat_h: int                 = 14,
         img_feat_w: int                 = 25,
         pc_range: Tuple[float, ...]     = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0),
@@ -79,9 +79,28 @@ class TransFusion(nn.Module):
     ) -> None:
         super().__init__()
         self.num_cameras = num_cameras
-        self.bev_h       = bev_h
-        self.bev_w       = bev_w
         self.use_pillar_net = use_pillar_net
+
+        # --- Single source of truth for the BEV grid ---
+        # The true grid size is fixed by geometry:
+        #   grid = (pc_range span / voxel_size) / out_size_factor
+        # bev_h/bev_w are therefore DERIVED here. Passing them explicitly is
+        # allowed only as a consistency assertion; a mismatching value raises
+        # immediately at construction rather than crashing mid-forward.
+        derived_w = int(round((pc_range[3] - pc_range[0]) / voxel_size[0] / out_size_factor))
+        derived_h = int(round((pc_range[4] - pc_range[1]) / voxel_size[1] / out_size_factor))
+        if bev_h is not None and bev_h != derived_h:
+            raise ValueError(
+                f"bev_h={bev_h} contradicts the geometry: "
+                f"(pc_range span {pc_range[4]-pc_range[1]:.1f} / voxel {voxel_size[1]} "
+                f"/ out_size_factor {out_size_factor}) = {derived_h}. "
+                f"Omit bev_h to let the model derive it.")
+        if bev_w is not None and bev_w != derived_w:
+            raise ValueError(
+                f"bev_w={bev_w} contradicts the geometry: derived {derived_w}. "
+                f"Omit bev_w to let the model derive it.")
+        self.bev_h = derived_h
+        self.bev_w = derived_w
 
         # --- LiDAR pipeline ---
         if use_pillar_net:
@@ -124,8 +143,8 @@ class TransFusion(nn.Module):
             num_queries=num_queries,
             num_classes=num_classes,
             num_cameras=num_cameras,
-            bev_h=bev_h,
-            bev_w=bev_w,
+            bev_h=self.bev_h,
+            bev_w=self.bev_w,
             img_feat_h=img_feat_h,
             img_feat_w=img_feat_w,
             pc_range=pc_range,
