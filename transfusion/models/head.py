@@ -445,6 +445,15 @@ class TransFusionHead(nn.Module):
 
         # ---- 1. Project BEV features ----
         bev = self.bev_proj(bev_feat)              # (B, d, H, W)
+        H, W = bev.shape[-2:]
+        if (H, W) != (self.bev_h, self.bev_w):
+            raise ValueError(
+                f"BEV feature map is {H}x{W} but the head was constructed with "
+                f"bev_h={self.bev_h}, bev_w={self.bev_w}. These must match — "
+                f"bev_h/bev_w should equal (pc_range span / voxel_size / "
+                f"out_size_factor). With the default config that is 64x64. "
+                f"Fix the bev_h/bev_w you pass to TransFusion(...)."
+            )
         bev_flat = bev.flatten(2).permute(0, 2, 1) # (B, HW, d)
         bev_pos  = self.bev_pos_embed.expand(B, -1, -1)
 
