@@ -99,9 +99,7 @@ diagnostics/
   check_collapse.sh        query-degeneracy gate
   check_localisation.py    prediction-to-ground-truth distance analysis
   check_faithfulness.sh    paper-conformance audit
-docs/
-  CHANGES.md               deviations found and corrected, with impact
-IMPROVEMENT_ROUND.md        pending changes: multisweep, CBGS, IoU matching
+
 ```
 
 ---
@@ -142,32 +140,7 @@ the nearest same-class ground truth, by range. The positive test spread cannot
 give: a model can be well spread out and uniformly wrong (as `full` was,
 pre-fix, at ~20 m).
 
-**`check_faithfulness.sh`** — greps the codebase against a checklist of every
-paper-specified hyperparameter and component, read-only.
-
----
-
-## Known deviations from the reference papers
-
-| Deviation | Status |
-|---|---|
-| Centre predicted as offset from query position | **fixed** |
-| Matching-cost coefficients (0.15/0.25) | **fixed** |
-| Category-aware query embedding | **fixed** |
-| Local-max query selection, ped/cone exemption | **fixed** |
-| Image resize augmentation | **fixed** |
-| Global scaling range (0.9–1.1) | **fixed** |
-| 10-sweep LiDAR accumulation | pending, patch written |
-| CBGS class-balanced sampling | pending, patch written |
-| IoU term in matching cost | pending, patch written |
-| Copy-and-paste augmentation | not implemented |
-| SMCA Gaussian attention mask | patch written, ungated |
-| Image-guided query initialisation | not implemented |
-| Two-stage training (20+6 epochs) | deliberately excluded — DAL Table 1 shows single-stage training is competitive |
-| Backbone: PointPillars vs VoxelNet | deliberate choice, reported separately in both papers |
-
-Full detail and published impact for each in `docs/CHANGES.md`.
-
+.
 ---
 
 ## References
