@@ -524,6 +524,14 @@ class NuScenesDataset(Dataset):
         imgs_rgb = (imgs_rgb - mean) / std               # (N, H, W, 3)
         imgs_rgb = imgs_rgb.transpose(0, 3, 1, 2)        # (N, 3, H, W)
 
+        # Composed transform for evaluation: LiDAR sensor frame -> global frame.
+        # Required because the official nuScenes evaluator expects submitted
+        # boxes in the GLOBAL frame, while the model predicts in the LiDAR
+        # sensor frame (same frame as pc_range/voxel_size). Without this, an
+        # evaluation script would silently submit boxes in the wrong frame and
+        # produce near-zero, meaningless metrics with no error raised.
+        lidar2global = T_le @ T_ls  # (4, 4)
+
         return {
             "voxels":       torch.from_numpy(voxels).float(),                # (M, P, 4)
             "num_points":   torch.from_numpy(num_pts).long(),                # (M,)
@@ -533,6 +541,7 @@ class NuScenesDataset(Dataset):
             "gt_boxes":     torch.from_numpy(gt_boxes).float(),              # (G, 10)
             "gt_labels":    torch.from_numpy(gt_labels).long(),              # (G,)
             "sample_token": sample["token"],
+            "lidar2global": torch.from_numpy(lidar2global).float(),          # (4, 4)
         }
 
 

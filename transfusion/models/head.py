@@ -202,7 +202,7 @@ class ImageFusionLayer(nn.Module):
 class SeparateHead(nn.Module):
     """
     Separate prediction heads for each output (class, xyz, wlh, yaw, velocity).
-    Mirrors mmdet3d's SeparateHead design.
+
     """
 
     def __init__(

@@ -139,7 +139,16 @@ class TransFusionMatcher(nn.Module):
             cost = (
                 self.cost_class * cls_cost +
                 self.cost_bbox  * bbox_cost
-            ).cpu().numpy()
+            )
+            # Defensive guard: an occasionally unstable prediction (e.g. an
+            # under-trained box head briefly producing a very large raw
+            # log_l/log_w/log_h value) can make cdist emit inf/nan, which
+            # scipy's linear_sum_assignment rejects outright and crashes the
+            # whole training job. Replace any non-finite entries with a large
+            # but finite cost so that pairing is merely de-prioritised rather
+            # than the batch aborting training.
+            cost = torch.nan_to_num(cost, nan=1e6, posinf=1e6, neginf=-1e6)
+            cost = cost.cpu().numpy()
 
             row_ind, col_ind = linear_sum_assignment(cost)
             indices.append((

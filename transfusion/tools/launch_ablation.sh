@@ -9,7 +9,7 @@ for SEED in 42 43; do
   for MODE in full cls_only dual_stream; do
     sbatch --job-name="tf_${MODE}_s${SEED}" \
            --export=ALL,MODE=${MODE},SEED=${SEED} \
-           Transfusion/tools/train_job.sbatch
+           transfusion/tools/train_job.sbatch
   done
 done
 
