@@ -110,6 +110,7 @@ def train_one_epoch(
 ) -> float:
     model.train()
     total_loss = 0.0
+    n_skipped = 0
 
     for step, batch in enumerate(loader):
         t0 = time.time()
@@ -135,9 +136,40 @@ def train_one_epoch(
             loss_dict = criterion(outputs, gt_labels, gt_boxes, bev_h, bev_w)
             loss = loss_dict["loss"]
 
+        # Skip the optimizer step entirely on a non-finite loss. Without this
+        # guard, scaler.step() would still apply an inf/nan gradient and
+        # permanently corrupt every model weight it touches — once that
+        # happens, EVERY subsequent step also produces nan/inf forever, since
+        # nan propagates through every operation. This guard leaves the
+        # weights exactly as they were before the bad batch, so training can
+        # simply continue past a single unstable step instead of being
+        # silently destroyed by it.
+        if not torch.isfinite(loss):
+            n_skipped += 1
+            if is_main(rank):
+                logger.warning(
+                    "Non-finite loss at epoch %d step %d — skipping optimizer "
+                    "step (weights left unchanged). Skipped %d step(s) so far "
+                    "this epoch.", epoch, step, n_skipped,
+                )
+            optimizer.zero_grad(set_to_none=True)
+            continue
+
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
-        nn.utils.clip_grad_norm_(model.parameters(), cfg["training"]["grad_clip"])
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), cfg["training"]["grad_clip"])
+
+        if not torch.isfinite(grad_norm):
+            n_skipped += 1
+            if is_main(rank):
+                logger.warning(
+                    "Non-finite gradient norm (%.4g) at epoch %d step %d — "
+                    "skipping optimizer step. Skipped %d step(s) so far this "
+                    "epoch.", float(grad_norm), epoch, step, n_skipped,
+                )
+            optimizer.zero_grad(set_to_none=True)
+            continue
+
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
@@ -162,8 +194,11 @@ def train_one_epoch(
                     writer.add_scalar(f"train/{k}", v.item(), gs)
                 writer.add_scalar("train/lr", lr, gs)
 
-    return total_loss / max(len(loader), 1)
+    if is_main(rank) and n_skipped > 0:
+        logger.warning("Epoch %d complete: %d step(s) skipped due to "
+                       "non-finite loss/gradient.", epoch, n_skipped)
 
+    return total_loss / max(len(loader) - n_skipped, 1)
 
 # ---------------------------------------------------------------------------
 # Checkpoint helpers
