@@ -50,41 +50,6 @@ there is no path by which image features reach the box head. `full` and
 `cls_only` use separate but identically-shaped heads, so they are
 **parameter-matched** — only the input tensor differs.
 
----
-
-## Result
-
-nuScenes val, seed 42, 20 epochs, PointPillars backbone:
-
-| Arm | NDS | mAP | trans_err | scale_err | orient_err |
-|---|---|---|---|---|---|
-| **full** | **0.228** | **0.129** | 0.900 | 0.300 | 0.842 |
-| cls_only | 0.114 | 0.084 | 1.056 | 0.630 | 1.218 |
-| dual_stream | — | — | — | — | — |
-
-`full` outperforms `cls_only` on every metric and on 8 of 10 object classes.
-The gap is concentrated at range: near-range localisation is comparable across
-arms (~0.5–0.8 m median), but at 30–50 m `full` reaches 1.37 m against
-`cls_only`'s 6.11 m — consistent with TransFusion's own reported gain profile
-(Table 8: +8.4 mAP beyond 30 m), where sparse distant LiDAR returns are
-compensated by image features.
-
-**This ordering initially reversed a first-pass result that favoured
-`cls_only`.** An audit against both papers found the implementation predicted
-the box centre as an absolute position rather than an offset from the query's
-heatmap-peak location (paper §3.3) — among other deviations. Correcting this
-reduced median localisation error from roughly 20 m to about 1 m and reversed
-the ablation's conclusion. See [`docs/CHANGES.md`](docs/CHANGES.md) for the
-full list of deviations found and corrected, each paired with its published
-impact.
-
-Absolute mAP remains below the papers' PointPillars reference (0.583) because
-of documented, still-open deviations — chiefly single-sweep LiDAR and the
-absence of CBGS class-balanced sampling — see
-[`IMPROVEMENT_ROUND.md`](IMPROVEMENT_ROUND.md).
-
----
-
 ## Architecture
 
 ```
