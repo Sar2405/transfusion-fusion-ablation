@@ -202,7 +202,7 @@ class ImageFusionLayer(nn.Module):
 class SeparateHead(nn.Module):
     """
     Separate prediction heads for each output (class, xyz, wlh, yaw, velocity).
-
+    Mirrors mmdet3d's SeparateHead design.
     """
 
     def __init__(
@@ -213,6 +213,11 @@ class SeparateHead(nn.Module):
     ) -> None:
         super().__init__()
         self.heads = nn.ModuleDict()
+        # Heads whose output must be constrained to [0,1] (normalised coords).
+        # center (x,y) and height (z) are normalised within pc_range, so their
+        # raw linear output is squashed with sigmoid; leaving them unbounded lets
+        # predictions drift outside the detection range and corrupts decoding.
+        self._sigmoid_heads = {"center", "height"}
         for name, (out_dim, num_conv) in heads.items():
             layers: List[nn.Module] = []
             c = in_channels
@@ -233,7 +238,13 @@ class SeparateHead(nn.Module):
                 nn.init.zeros_(head[-1].bias)
 
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
-        return {name: head(x) for name, head in self.heads.items()}
+        out = {}
+        for name, head in self.heads.items():
+            y = head(x)
+            if name in self._sigmoid_heads:
+                y = y.sigmoid()          # constrain normalised coords to [0,1]
+            out[name] = y
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +323,10 @@ class TransFusionHead(nn.Module):
 
         # --- Learnable query content embeddings ---
         self.query_feat = nn.Embedding(num_queries, d_model)
+        # Category-aware query embedding (paper 3.2, Table 6 ~+2.9 NDS):
+        # each query seed's predicted class is embedded and added to its
+        # content vector so the decoder knows what kind of object it seeds.
+        self.cat_emb = nn.Embedding(num_classes, d_model)
 
         # --- BEV positional embeddings (fixed sinusoidal grid) ---
         self.register_buffer(
@@ -386,6 +401,7 @@ class TransFusionHead(nn.Module):
 
     def _init_weights(self) -> None:
         nn.init.xavier_uniform_(self.query_feat.weight)
+        nn.init.xavier_uniform_(self.cat_emb.weight)
         # Focal-loss bias for heatmap
         bias_val = -math.log((1 - 0.01) / 0.01)
         nn.init.constant_(self.heatmap_head[-1].bias, bias_val)
@@ -409,7 +425,23 @@ class TransFusionHead(nn.Module):
         B, C, H, W = heatmap.shape
         # Take max over classes first (class-agnostic peaks), then top-K
         heat_max = heatmap.max(dim=1).values                 # (B, H, W)
-        flat = heat_max.view(B, -1)                           # (B, HW)
+        # Local-maximum filtering (paper 3.2): keep only cells that are >= all
+        # 8 neighbours, so top-K cannot pick several cells of the same hotspot
+        # (which wastes queries and spawns duplicate detections). Non-maxima are
+        # pushed to -inf before the top-K so they are never selected.
+        pooled = F.max_pool2d(heat_max.unsqueeze(1), kernel_size=3,
+                              stride=1, padding=1).squeeze(1)   # (B,H,W)
+        is_peak = (heat_max >= pooled)                         # (B,H,W) bool
+        # Paper supp. B: do NOT apply local-max suppression for pedestrian and
+        # traffic cone — they cluster densely, and suppressing neighbours would
+        # wrongly merge distinct nearby instances. Cells whose argmax class is
+        # one of those keep their candidacy regardless of the peak test.
+        dense_cls = torch.tensor([8, 9], device=heatmap.device)   # ped, cone
+        cls_argmax = heatmap.argmax(dim=1)                        # (B,H,W)
+        is_dense = (cls_argmax.unsqueeze(-1) == dense_cls).any(-1)
+        is_peak = is_peak | is_dense
+        heat_masked = heat_max.masked_fill(~is_peak, float("-inf"))
+        flat = heat_masked.view(B, -1)                        # (B, HW)
         scores, idx = flat.topk(self.num_queries, dim=-1)    # (B, K)
 
         top_cls = heatmap.view(B, C, -1).permute(0, 2, 1)   # (B, HW, C)
@@ -420,13 +452,26 @@ class TransFusionHead(nn.Module):
 
         pos2d = torch.stack([hx, hy], dim=-1)                # (B, K, 2)
         pos_emb = pos2posemb2d(pos2d, self.d_model // 2)     # (B, K, d)
-        return pos_emb, scores, top_cls
+        return pos_emb, scores, top_cls, idx, pos2d
 
     # ------------------------------------------------------------------ #
-    def _assemble_box(self, head_out: Dict[str, Tensor]) -> Tensor:
-        """Concatenate per-attribute predictions into (B, Q, 10) box tensor."""
+    def _assemble_box(self, head_out: Dict[str, Tensor],
+                      ref_points: Optional[Tensor] = None) -> Tensor:
+        """
+        Concatenate per-attribute predictions into a (B, Q, 10) box tensor.
+
+        CENTER-OFFSET (paper 3.3): the head predicts dx, dy RELATIVE to the
+        query position (the heatmap peak that seeded the query), not the
+        absolute centre. Final centre = ref_point + delta, clamped to [0,1].
+        The delta head is initialised near zero, so the model starts out
+        predicting exactly the heatmap peak — a far stronger starting point
+        than regressing absolute position from scratch.
+        """
+        centre = head_out["center"]                     # (B,Q,2) delta
+        if ref_points is not None:
+            centre = (ref_points + centre).clamp(0.0, 1.0)
         return torch.cat([
-            head_out["center"],   # (B,Q,2)  x,y
+            centre,               # (B,Q,2)  x,y
             head_out["height"],   # (B,Q,1)  z
             head_out["dim"],      # (B,Q,3)  log w,l,h
             head_out["rot"],      # (B,Q,2)  sin,cos
@@ -459,17 +504,25 @@ class TransFusionHead(nn.Module):
 
         # ---- 2. Heatmap ----
         heatmap = self.heatmap_head(bev)           # (B, C, H, W)
-        query_pos_emb, _, _ = self._query_pos_from_heatmap(heatmap.detach())
+        query_pos_emb, query_heat_scores, top_cls, peak_idx, ref_points = self._query_pos_from_heatmap(heatmap.detach())
+        # Input-dependent query content (paper 3.2): gather BEV features at the
+        # selected peak locations so each query's content reflects what is at
+        # that location, not just a static learned slot. bev_flat: (B, HW, d).
+        bev_content = torch.gather(
+            bev_flat, 1, peak_idx.unsqueeze(-1).expand(-1, -1, bev_flat.shape[-1]))
 
         # ---- 3. Initialise queries ----
         queries = self.query_feat.weight.unsqueeze(0).expand(B, -1, -1)  # (B, Q, d)
+        queries = queries + bev_content        # input-dependent content (paper 3.2)
+        # add category embedding of each seed's predicted class
+        queries = queries + self.cat_emb(top_cls)            # (B, Q, d)
 
         # ---- 4. Stage-1 LiDAR decoder ----
         for layer in self.lidar_decoder:
             queries = layer(queries, bev_flat, query_pos_emb, bev_pos)
 
         aux_out  = self.aux_heads(queries)
-        pred_boxes_s1 = self._assemble_box(aux_out)   # (B, Q, 10)
+        pred_boxes_s1 = self._assemble_box(aux_out, ref_points)   # (B, Q, 10)
         pred_logits_s1 = aux_out["cls"]                # (B, Q, C)
 
         # ---- 5. Project image features ----
@@ -527,8 +580,12 @@ class TransFusionHead(nn.Module):
             cls_src, box_src = fused_query, fused_query
 
         pred_logits = self.final_cls_head(cls_src)["cls"]   # (B, Q, C)
+        # Paper 4 (Testing): final confidence is the geometric mean of the
+        # heatmap score at the query's seed location and the classification
+        # score. Stored separately so the loss still sees raw logits.
+        self._last_heatmap_scores = query_heat_scores        # (B, Q)
         box_out     = self.final_box_head(box_src)          # dict of box parts
-        pred_boxes  = self._assemble_box(box_out)           # (B, Q, 10)
+        pred_boxes  = self._assemble_box(box_out, ref_points)           # (B, Q, 10)
 
         return {
             "heatmap":        heatmap,

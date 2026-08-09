@@ -162,6 +162,7 @@ class NuScenesDataset(Dataset):
         max_points: int          = 10,
         max_voxels: int          = 30_000,
         img_size: Tuple[int,int] = (448, 800),   # (H, W)
+        img_resize_range: Tuple[float,float] = (0.95, 1.35),
         augment: bool            = False,
     ) -> None:
         super().__init__()
@@ -174,6 +175,10 @@ class NuScenesDataset(Dataset):
         self.max_points = max_points
         self.max_voxels = max_voxels
         self.img_size   = img_size
+        # Random image-resize augmentation range (multiplier on the base scale).
+        # DAL uses a wide range; too wide with a small backbone can hurt, so this
+        # is configurable and should be gated. Set (1.0, 1.0) to disable.
+        self.img_resize_range = img_resize_range
         self.augment    = augment
         self.class_names = NUSCENES_CLASS_NAMES
         self.cls2idx     = {c: i for i, c in enumerate(self.class_names)}
@@ -297,14 +302,49 @@ class NuScenesDataset(Dataset):
             if img is None:
                 raise FileNotFoundError(f"Camera image not found: {img_path}")
             H, W = img.shape[:2]
-            img  = cv2.resize(img, (tW, tH))
+
+            # ---- Random resize augmentation (DAL Tab.5: +3.91 mAP) ----------
+            # Train: resize by a random factor around the base scale, then
+            # random-crop/pad back to (tH, tW). Eval: deterministic base scale.
+            # The intrinsics are scaled by the SAME factor and shifted by the
+            # crop offset — otherwise lidar2img projects to the wrong pixels and
+            # the camera fusion silently attends to unrelated image regions.
+            base_sy, base_sx = tH / H, tW / W
+            if self.augment:
+                lo, hi = self.img_resize_range           # e.g. (0.95, 1.35)
+                jitter = float(np.random.uniform(lo, hi))
+            else:
+                jitter = 1.0
+            sy, sx = base_sy * jitter, base_sx * jitter
+            rh, rw = max(int(round(H * sy)), 1), max(int(round(W * sx)), 1)
+            img = cv2.resize(img, (rw, rh))
+
+            # crop (if larger than target) or pad (if smaller) to exactly tH x tW
+            if rh >= tH:
+                oy = int(np.random.randint(0, rh - tH + 1)) if self.augment else (rh - tH) // 2
+                img = img[oy:oy + tH]
+            else:
+                oy = -((tH - rh) // 2)
+                pad = np.zeros((tH, img.shape[1], 3), dtype=img.dtype)
+                pad[-oy:-oy + rh] = img
+                img = pad
+            if rw >= tW:
+                ox = int(np.random.randint(0, rw - tW + 1)) if self.augment else (rw - tW) // 2
+                img = img[:, ox:ox + tW]
+            else:
+                ox = -((tW - rw) // 2)
+                pad = np.zeros((img.shape[0], tW, 3), dtype=img.dtype)
+                pad[:, -ox:-ox + rw] = img
+                img = pad
             imgs.append(img)
 
-            # Intrinsics adjusted for resize
+            # Intrinsics: scale by the applied factor, then shift by crop offset
             K = np.eye(4, dtype=np.float64)
             K[:3, :3] = np.array(cam_cs["camera_intrinsic"], dtype=np.float64)
-            K[0, :] *= tW / W   # scale fx, cx
-            K[1, :] *= tH / H   # scale fy, cy
+            K[0, :] *= sx       # scale fx, cx
+            K[1, :] *= sy       # scale fy, cy
+            K[0, 2] -= ox       # shift principal point by horizontal crop
+            K[1, 2] -= oy       # shift principal point by vertical crop
 
             # Extrinsics
             T_cam_sensor = to_mat(cam_cs["rotation"], cam_cs["translation"])  # cam_sensor→cam_ego

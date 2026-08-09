@@ -96,7 +96,8 @@ training:
     pct_start: 0.4
     div_factor: 10.0
     final_div_factor: 100.0
-  amp: false                   # automatic mixed precision
+  amp: true                   # automatic mixed precision
+  amp_dtype: bf16
   sync_bn: true               # for multi-GPU
 
 evaluation:

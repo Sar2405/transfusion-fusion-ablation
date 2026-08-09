@@ -65,7 +65,8 @@ DEFAULT_ATTRIBUTE = {
 }
 
 
-def build_model(cfg: dict, checkpoint_path: str, device: torch.device) -> TransFusion:
+def build_model(cfg: dict, checkpoint_path: str, device: torch.device,
+                mode_override: str = None) -> TransFusion:
     mc = cfg["model"]
     model = TransFusion(
         bev_in_channels=mc["bev_in_channels"],
@@ -81,7 +82,7 @@ def build_model(cfg: dict, checkpoint_path: str, device: torch.device) -> TransF
         voxel_size=tuple(mc["voxel_size"]),
         out_size_factor=mc["out_size_factor"],
         point_feat_channels=mc.get("point_feat_channels", 4),
-        fusion_mode=mc.get("fusion_mode", "full"),
+        fusion_mode=mode_override or mc.get("fusion_mode", "full"),
         use_pillar_net=True,
         pretrained_img=False,  # loading trained weights next; skip ImageNet fetch
     ).to(device)
@@ -392,6 +393,11 @@ def main() -> int:
     ap.add_argument("--config", required=True)
     ap.add_argument("--data-root", required=True)
     ap.add_argument("--checkpoint", required=True)
+    ap.add_argument("--mode", default=None,
+                    choices=["full", "cls_only", "dual_stream"],
+                    help="fusion_mode to build the model with; overrides the "
+                         "config value. Must match how the checkpoint was "
+                         "TRAINED, not left at the config default.")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--version", default="v1.0-trainval")
     ap.add_argument("--batch-size", type=int, default=2)
@@ -431,7 +437,9 @@ def main() -> int:
     log.info("Val set: %d samples", len(val_ds))
 
     log.info("Building model and loading checkpoint...")
-    model = build_model(cfg, args.checkpoint, device)
+    if args.mode:
+        log.info("fusion_mode overridden via --mode: %s", args.mode)
+    model = build_model(cfg, args.checkpoint, device, mode_override=args.mode)
 
     log.info("Running inference over val split...")
     submission = run_inference(

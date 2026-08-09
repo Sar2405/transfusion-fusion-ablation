@@ -4,3 +4,6 @@ work_dirs/
 *.pth
 *.zip
 .DS_Store
+*.swp
+*.bak2
+*.bak

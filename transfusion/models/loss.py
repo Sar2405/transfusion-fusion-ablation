@@ -299,7 +299,7 @@ class TransFusionLoss(nn.Module):
 
         self.heatmap_loss = GaussianFocalLoss()
         self.cls_loss     = SigmoidFocalLoss(alpha=focal_alpha, gamma=focal_gamma)
-        self.matcher      = TransFusionMatcher(cost_class=1.0, cost_bbox=1.0)
+        self.matcher      = TransFusionMatcher(cost_class=0.15, cost_bbox=0.25)
 
     # ------------------------------------------------------------------ #
     def _cls_and_box_loss(

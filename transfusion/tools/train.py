@@ -122,7 +122,10 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast(enabled=cfg["training"]["amp"]):
+        amp_dtype = (torch.bfloat16
+                     if cfg["training"].get("amp_dtype") == "bf16"
+                     else torch.float16)
+        with autocast(enabled=cfg["training"]["amp"], dtype=amp_dtype):
             outputs = model(
                 camera_imgs=camera_imgs,
                 voxels=voxels,
@@ -164,6 +167,11 @@ def train_one_epoch(
                     "skipping optimizer step. Skipped %d step(s) so far this "
                     "epoch.", float(grad_norm), epoch, step, n_skipped,
                 )
+            # unscale_() has already run this iteration; the scaler must be
+            # advanced before the next step, or the following unscale_() call
+            # raises. Skipping the optimizer step does NOT exempt us from
+            # completing the scaler's update cycle.
+            scaler.update()
             optimizer.zero_grad(set_to_none=True)
             continue
 
