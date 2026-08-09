@@ -29,11 +29,10 @@ class PillarFeatureNet(nn.Module):
             coords    (M, 4) int         – [batch_idx, z, y, x]
     Output: BEV pseudo-image (B, C_out, ny, nx)
 
-    FIX (bug #7): pfn_in now computed as in_channels + in_channels + 2
-        = in_channels raw features
+    The PFN input dim is in_channels * 2 + 2:
+        in_channels raw features
         + in_channels offset-from-mean features   (same dim as raw)
         + 2 offset-from-pillar-centre (xy only)
-    This is always correct regardless of in_channels.
     """
 
     def __init__(
@@ -290,9 +289,8 @@ class ResNet50(nn.Module):
             log = logging.getLogger(__name__)
             log.info("Pretrained ResNet-50 loaded. Missing: %d, Unexpected: %d",
                      len(missing), len(unexpected))
-            # A correct mapping leaves ~0 missing/unexpected. Fail loudly in
-            # spirit: warn hard if the mapping regressed, since a silently
-            # random image backbone quietly costs accuracy.
+            # A correct mapping leaves ~0 missing/unexpected; a large count
+            # means the image backbone is largely randomly initialised.
             if len(missing) > 10 or len(unexpected) > 10:
                 log.warning("Pretrained remap looks WRONG (missing=%d, "
                             "unexpected=%d). Image backbone may be largely "

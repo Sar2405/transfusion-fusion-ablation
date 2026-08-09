@@ -132,13 +132,12 @@ class ConvBnAct(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Gaussian heatmap helpers  (fixed syntax error in original)
+# Gaussian heatmap helpers
 # ---------------------------------------------------------------------------
 
 def gaussian_2d(shape: tuple, sigma: float = 1.0):
     """Generate a 2-D Gaussian kernel (numpy)."""
     import numpy as np
-    # FIX: was an invalid generator expression assigned to m, n
     m = (shape[0] - 1) / 2.0
     n = (shape[1] - 1) / 2.0
     y, x = np.ogrid[-m : m + 1, -n : n + 1]

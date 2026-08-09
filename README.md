@@ -1,5 +1,3 @@
-# transfusion-fusion-ablation
-Controlled ablation of LiDAR-camera fusion strategies (TransFusion, DAL, DeepInteraction) inside one fixed architecture, for a master's thesis on 3D object detection
 # Fusion Strategies for LiDAR–Camera 3D Object Detection
 
 A controlled ablation of three LiDAR–camera fusion philosophies in a
@@ -137,10 +135,8 @@ passing only rules out that one failure mode. Runs in seconds.
 
 **`check_localisation.py`** — median distance from confident predictions to
 the nearest same-class ground truth, by range. The positive test spread cannot
-give: a model can be well spread out and uniformly wrong (as `full` was,
-pre-fix, at ~20 m).
+give: a model can be well spread out and uniformly wrong.
 
-.
 ---
 
 ## References

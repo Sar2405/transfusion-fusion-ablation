@@ -1,25 +1,18 @@
 """
 nuScenes dataset for TransFusion.
 
-Bug fixes applied
------------------
-BUG #1/#2  _load_pointcloud: points stay in LiDAR sensor frame (correct for
-           voxelisation). Projection matrix corrected to proper chain:
-               K @ T_cam_sensor⁻¹ @ T_cam_ego⁻¹ @ T_lidar_ego @ T_lidar_sensor
-           (original wrongly composed T_eg and T_ge in the wrong order, and used
-           lidar_ego pose instead of cam_ego pose for the ego→global step).
+Notes on frame conventions
+---------------------------
+Points and GT boxes are kept in the LiDAR sensor frame (correct for
+voxelisation). The lidar→image projection chain is:
+    K @ T_cam_sensor⁻¹ @ T_cam_ego⁻¹ @ T_lidar_ego @ T_lidar_sensor
 
-BUG #3     _load_annotations: nuScenes size = [w, l, h] not [w, l, h].
-           We now correctly unpack as w, l, h and store log_l, log_w, log_h
-           in the paper-standard order [l, w, h] (CenterPoint convention).
+nuScenes annotation size is [width, length, height]; we store dimensions in
+the paper-standard [l, w, h] order (CenterPoint convention).
 
-BUG #4     _augment_lidar: now returns augmentation parameters and
-           __getitem__ applies the same transform to gt_boxes.
-
-BUG #5     hard_voxelise: coord key order was inconsistent (mixed x/y/z).
-           Fixed: internal key = (z_int, y_int, x_int), output coords also
-           in (z, y, x) order so PillarFeatureNet receives [batch, z, y, x]
-           after collate_fn prepends the batch index.
+hard_voxelise keys and outputs coords consistently as (z, y, x), so
+PillarFeatureNet receives [batch, z, y, x] after collate_fn prepends the
+batch index.
 """
 from __future__ import annotations
 
@@ -33,7 +26,7 @@ from torch.utils.data import Dataset
 
 
 # ---------------------------------------------------------------------------
-# Hard voxeliser  (BUG #5 fixed)
+# Hard voxeliser
 # ---------------------------------------------------------------------------
 
 def hard_voxelise(
@@ -71,7 +64,7 @@ def hard_voxelise(
     yi = np.clip(yi, 0, grid_size[1] - 1)
     zi = np.clip(zi, 0, grid_size[2] - 1)
 
-    # BUG #5 FIX: key and stored coord both use (z, y, x) consistently
+    # key and stored coord both use (z, y, x) consistently
     voxel_dict: Dict[Tuple[int,int,int], int] = {}
     voxels_list: List[List[np.ndarray]]       = []
     coords_list: List[np.ndarray]             = []
@@ -270,8 +263,7 @@ class NuScenesDataset(Dataset):
         """
         Load 6 camera images and compute lidar→image projection matrices.
 
-        BUG #1/#2 FIX:
-        Correct projection chain (LiDAR sensor frame → image pixels):
+        Projection chain (LiDAR sensor frame → image pixels):
             K @ T_cam_sensor⁻¹ @ T_cam_ego⁻¹ @ T_lidar_ego @ T_lidar_sensor
 
         where:
@@ -318,7 +310,6 @@ class NuScenesDataset(Dataset):
             T_cam_sensor = to_mat(cam_cs["rotation"], cam_cs["translation"])  # cam_sensor→cam_ego
             T_cam_ego    = to_mat(cam_ep["rotation"], cam_ep["translation"])  # cam_ego→global
 
-            # BUG #2 FIX: correct chain
             # lidar_sensor → global: T_lidar_ego @ T_lidar_sensor
             # global → cam_ego:      inv(T_cam_ego)
             # cam_ego → cam_sensor:  inv(T_cam_sensor)
@@ -340,7 +331,7 @@ class NuScenesDataset(Dataset):
         """
         Load GT boxes (in global frame) and transform to LiDAR sensor frame.
 
-        BUG #3 FIX: nuScenes size = [width, length, height].
+        nuScenes size = [width, length, height].
         Box code = [x_norm, y_norm, z_norm, log_l, log_w, log_h, sin_yaw, cos_yaw, vx, vy]
         (l=longitudinal length, w=lateral width – matches CenterPoint/TransFusion convention)
 
@@ -373,7 +364,7 @@ class NuScenesDataset(Dataset):
             xyz_lidar  = T_global_to_lidar @ xyz_global               # (4,)
             x, y, z    = xyz_lidar[:3]
 
-            # BUG #3 FIX: nuScenes size = [width, length, height]
+            # nuScenes size = [width, length, height]
             width, length, height = ann["size"]                        # w, l, h (metric)
 
             # Yaw: global quaternion → LiDAR-frame yaw
@@ -413,7 +404,7 @@ class NuScenesDataset(Dataset):
                 np.array(labels_list, dtype=np.int64))
 
     # ------------------------------------------------------------------ #
-    # Augmentation  (BUG #4 fixed: returns transform params)
+    # Augmentation
     # ------------------------------------------------------------------ #
 
     def _sample_augmentation(self) -> Dict:
@@ -434,7 +425,7 @@ class NuScenesDataset(Dataset):
 
     def _augment_boxes(self, boxes: np.ndarray, aug: Dict) -> np.ndarray:
         """
-        BUG #4 FIX: Apply identical transform to GT boxes.
+        Apply the identical transform used on the point cloud to GT boxes.
         boxes: (G, 10) [x_n,y_n,z_n,log_l,log_w,log_h,sin,cos,vx,vy]
         We must undo normalisation, rotate, renormalise.
         """
@@ -496,7 +487,7 @@ class NuScenesDataset(Dataset):
         # --- Annotations (LiDAR sensor frame, normalised) ---
         gt_boxes, gt_labels = self._load_annotations(sample, T_ls, T_le)
 
-        # --- Augmentation (BUG #4: same params applied to pts and boxes) ---
+        # --- Augmentation (same params applied to pts and boxes) ---
         if self.augment:
             aug = self._sample_augmentation()
             pts      = self._augment_points(pts, aug)

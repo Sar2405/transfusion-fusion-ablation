@@ -76,10 +76,7 @@ def is_main(rank: int) -> bool:
 
 
 def compute_bev_size(cfg: dict) -> Tuple[int, int]:
-    """
-    BUG #6 FIX: compute bev_h, bev_w in a single clean expression.
-    Uses pc_range and voxel_size from model config, divided by out_size_factor.
-    """
+    """Compute bev_h, bev_w from pc_range and voxel_size, divided by out_size_factor."""
     pc = cfg["model"]["pc_range"]
     vs = cfg["model"]["voxel_size"]
     osf = cfg["model"]["out_size_factor"]
@@ -280,7 +277,6 @@ def main() -> None:
 
     torch.manual_seed(args.seed + rank)
 
-    # BUG #6 FIX: clean BEV size computation
     bev_h, bev_w = compute_bev_size(cfg)
     if is_main(rank):
         logger.info("BEV grid: H=%d W=%d", bev_h, bev_w)

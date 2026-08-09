@@ -6,8 +6,8 @@ to the nuScenes submission format, and invokes the official nuscenes-devkit
 evaluator to compute NDS / mAP / mATE / mASE / mAOE / mAVE / mAAE.
 
 Additionally produces a per-class and per-range breakdown (0-20/20-30/30-40/
-40-50m), since that conditional analysis — not the aggregate table alone — is
-the primary analysis the thesis proposal commits to.
+40-50m), since that conditional analysis is more informative than the
+aggregate table alone.
 
 Usage (from the folder CONTAINING the `transfusion` package):
     PYTHONPATH=. python transfusion/tools/evaluate.py \
@@ -239,9 +239,8 @@ def run_official_eval(nusc, result_path: str, output_dir: str,
 def per_range_breakdown(nusc, result_path: str, gt_boxes_by_token: dict,
                         output_dir: str, score_threshold: float = 0.3) -> dict:
     """
-    Custom per-class, per-range-bin breakdown — the primary analysis the
-    proposal commits to, since the official evaluator reports aggregate and
-    per-class AP but not range-conditioned numbers.
+    Custom per-class, per-range-bin breakdown, since the official evaluator
+    reports aggregate and per-class AP but not range-conditioned numbers.
 
     Method: predictions above `score_threshold` are matched greedily to GT in
     descending score order, within the same class and range bin, using a 2 m
