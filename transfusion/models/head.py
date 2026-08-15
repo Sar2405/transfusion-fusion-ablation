@@ -359,7 +359,7 @@ class TransFusionHead(nn.Module):
         # --- Stage 2: LiDAR-Camera fusion decoder ---
         self.fusion_decoder = nn.ModuleList([
             ImageFusionLayer(d_model, nhead, d_model * 4, num_cameras, dropout,
-                             img_h=img_feat_h, img_w=img_feat_w)
+                             img_h=img_feat_h, img_w=img_feat_w, img_stride=8)
             for _ in range(num_fusion_decoder_layers)
         ])
 
@@ -395,7 +395,8 @@ class TransFusionHead(nn.Module):
                     self.interact_layers.append(
                         ImageFusionLayer(d_model, nhead, d_model * 4,
                                          num_cameras, dropout,
-                                         img_h=img_feat_h, img_w=img_feat_w))
+                                         img_h=img_feat_h, img_w=img_feat_w,
+                                         img_stride=8))
             self.fusion_decoder = None
         else:
             self.interact_layers = None

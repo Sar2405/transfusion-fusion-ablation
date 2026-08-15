@@ -340,6 +340,7 @@ def main() -> None:
         dropout=mc["dropout"],
         bev_h=bev_h,
         bev_w=bev_w,
+        img_size=tuple(dc["img_size"]),
         pc_range=tuple(mc["pc_range"]),
         voxel_size=tuple(mc["voxel_size"]),
         out_size_factor=mc["out_size_factor"],

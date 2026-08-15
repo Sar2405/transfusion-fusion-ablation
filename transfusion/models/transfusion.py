@@ -65,8 +65,9 @@ class TransFusion(nn.Module):
         dropout: float                  = 0.1,
         bev_h: Optional[int]            = None,   # derived from geometry if None
         bev_w: Optional[int]            = None,   # derived from geometry if None
-        img_feat_h: int                 = 14,
-        img_feat_w: int                 = 25,
+        img_size: Tuple[int, int]       = (448, 800),   # H, W — must match config
+        img_feat_h: Optional[int]       = None,   # derived from img_size/stride if None
+        img_feat_w: Optional[int]       = None,   # derived from img_size/stride if None
         pc_range: Tuple[float, ...]     = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0),
         voxel_size: Tuple[float, ...]   = (0.2, 0.2, 8.0),
         out_size_factor: int            = 8,
@@ -102,6 +103,27 @@ class TransFusion(nn.Module):
                 f"Omit bev_w to let the model derive it.")
         self.bev_h = derived_h
         self.bev_w = derived_w
+
+        # --- Image feature spatial dims ---
+        # Mirrors the bev_h/bev_w derivation above: compute from geometry
+        # (input resolution / stride) instead of hardcoding, so a value
+        # silently wrong for the real backbone can never reach the head.
+        # img_size is (H, W) per camera, matching the config's img_size key.
+        img_stride = 8   # ImageBackbone finest FPN level (P3) is stride-8;
+                         # confirmed empirically: 448/8=56, 800/8=100
+        derived_img_h = img_size[0] // img_stride
+        derived_img_w = img_size[1] // img_stride
+        if img_feat_h is not None and img_feat_h != derived_img_h:
+            raise ValueError(
+                f"img_feat_h={img_feat_h} contradicts the geometry: "
+                f"img_size[0]={img_size[0]} / img_stride={img_stride} = "
+                f"{derived_img_h}. Omit img_feat_h to let the model derive it.")
+        if img_feat_w is not None and img_feat_w != derived_img_w:
+            raise ValueError(
+                f"img_feat_w={img_feat_w} contradicts the geometry: derived "
+                f"{derived_img_w}. Omit img_feat_w to let the model derive it.")
+        img_feat_h = derived_img_h
+        img_feat_w = derived_img_w
 
         # --- LiDAR pipeline ---
         if use_pillar_net:
