@@ -240,8 +240,20 @@ class TransFusion(nn.Module):
         B = pred_logits.shape[0]
         results = []
 
+        # The final confidence is the geometric mean of the heatmap score at
+        # the query's seed location and the per-query classification score.
+        # The head stores the former during forward(); if it is absent
+        # (older checkpoint / changed head) fall back to classification score
+        # alone rather than failing.
+        heat_scores = getattr(self.head, "_last_heatmap_scores", None)
+
         for b in range(B):
-            scores_all, labels = pred_logits[b].sigmoid().max(dim=-1)  # (Q,), (Q,)
+            cls_scores, labels = pred_logits[b].sigmoid().max(dim=-1)  # (Q,), (Q,)
+            if heat_scores is not None:
+                hs = heat_scores[b].sigmoid().clamp(min=1e-6)   # (Q,)
+                scores_all = torch.sqrt(cls_scores.clamp(min=1e-6) * hs)
+            else:
+                scores_all = cls_scores
             mask = scores_all > score_threshold
 
             scores = scores_all[mask]

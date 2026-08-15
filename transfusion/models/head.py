@@ -104,13 +104,18 @@ class ImageFusionLayer(nn.Module):
         dim_ff: int,
         num_cameras: int,
         dropout: float = 0.1,
-        img_h: int = 14,   # image feature spatial size (after backbone)
+        img_h: int = 14,   # image FEATURE spatial size (after backbone)
         img_w: int = 25,
+        img_stride: int = 32,   # feature-size -> input-size multiplier
     ) -> None:
         super().__init__()
         self.num_cameras = num_cameras
         self.img_h = img_h
         self.img_w = img_w
+        # The visibility test needs the input image resolution, since
+        # lidar2img projects into input pixels, not the feature-map size.
+        self.input_h = img_h * img_stride
+        self.input_w = img_w * img_stride
 
         # Camera selection: predicted xyz → per-camera weight
         self.cam_gate = MLP(3, d_model // 2, num_cameras, num_layers=2)
@@ -141,9 +146,10 @@ class ImageFusionLayer(nn.Module):
         u = pts_cam[..., 0] / depth.clamp(min=1e-3)
         v = pts_cam[..., 1] / depth.clamp(min=1e-3)
 
-        # Normalise to [0,1] image space (assume img_w x img_h)
-        u_norm = u / (self.img_w * 32)          # rough stride-32 assumption
-        v_norm = v / (self.img_h * 32)
+        # Normalise to [0,1] image space using the INPUT resolution, which is
+        # the space lidar2img projects into (not the feature-map size).
+        u_norm = u / self.input_w
+        v_norm = v / self.input_h
 
         in_front = depth > 0
         in_bounds = (u_norm >= 0) & (u_norm <= 1) & (v_norm >= 0) & (v_norm <= 1)

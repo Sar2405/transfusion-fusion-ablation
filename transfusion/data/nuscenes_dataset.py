@@ -459,6 +459,10 @@ class NuScenesDataset(Dataset):
         c, s = math.cos(aug["angle"]), math.sin(aug["angle"])
         rot  = np.array([[c, -s], [s, c]], dtype=np.float32)
         pts[:, :2] = (pts[:, :2] @ rot.T) * aug["scale"]
+        # Global scaling is a 3-D similarity transform — z must scale by the
+        # same factor as x,y, or the point cloud becomes inconsistent with
+        # the (also scaled) boxes.
+        pts[:, 2] *= aug["scale"]
         if aug["flip"]:
             pts[:, 1] = -pts[:, 1]
         return pts
@@ -486,6 +490,19 @@ class NuScenesDataset(Dataset):
         boxes = boxes.copy()
         boxes[:, 0] = (xy[:, 0] - pr[0]) / (pr[3] - pr[0])
         boxes[:, 1] = (xy[:, 1] - pr[1]) / (pr[4] - pr[1])
+
+        # z is stored normalised within pc_range, so it must be decoded to
+        # metres, scaled, and re-encoded — scaling the normalised value
+        # directly is not the same operation.
+        z_m = boxes[:, 2] * (pr[5] - pr[2]) + pr[2]
+        z_m = z_m * aug["scale"]
+        boxes[:, 2] = (z_m - pr[2]) / (pr[5] - pr[2])
+
+        # Points were scaled by `scale`, so the object physically appears
+        # `scale`x larger; its l/w/h must follow or the size head trains
+        # against contradictory targets. Dimensions are log-encoded, so a
+        # multiplicative scale is an additive log(scale).
+        boxes[:, 3:6] += math.log(aug["scale"])
 
         # Rotate yaw: sin(θ+α), cos(θ+α)
         sin_t, cos_t = boxes[:, 6], boxes[:, 7]
