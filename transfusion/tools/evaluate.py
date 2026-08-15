@@ -68,6 +68,35 @@ DEFAULT_ATTRIBUTE = {
 def build_model(cfg: dict, checkpoint_path: str, device: torch.device,
                 mode_override: str = None) -> TransFusion:
     mc = cfg["model"]
+    dc = cfg["data"]
+
+    # Load the checkpoint before constructing the model: the checkpoint
+    # records which fusion_mode it was trained with, and that determines the
+    # architecture to build. Resolution order:
+    #   checkpoint field  >  --mode  >  config default
+    # A disagreement between an explicit --mode and the checkpoint is fatal,
+    # never silently resolved — evaluating a cls_only checkpoint as a full
+    # model produces plausible, entirely wrong numbers.
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt_mode = ckpt.get("fusion_mode") if isinstance(ckpt, dict) else None
+
+    if ckpt_mode is not None:
+        if mode_override is not None and mode_override != ckpt_mode:
+            raise SystemExit(
+                f"FATAL: --mode '{mode_override}' contradicts the checkpoint, "
+                f"which was trained with fusion_mode '{ckpt_mode}'.\n"
+                f"  checkpoint: {checkpoint_path}\n"
+                f"Refusing to evaluate — one of the two is wrong.")
+        resolved_mode = ckpt_mode
+        log.info("fusion_mode '%s' read from checkpoint", resolved_mode)
+    else:
+        resolved_mode = mode_override or mc.get("fusion_mode", "full")
+        log.warning(
+            "Checkpoint has no embedded fusion_mode (saved before this was "
+            "added). Falling back to '%s' from %s. VERIFY this matches how the "
+            "checkpoint was trained — an incorrect mode yields plausible but "
+            "wrong metrics.", resolved_mode,
+            "--mode" if mode_override else "the config file")
     model = TransFusion(
         bev_in_channels=mc["bev_in_channels"],
         num_cameras=mc["num_cameras"],
@@ -78,16 +107,16 @@ def build_model(cfg: dict, checkpoint_path: str, device: torch.device,
         num_lidar_decoder_layers=mc["num_lidar_decoder_layers"],
         num_fusion_decoder_layers=mc["num_fusion_decoder_layers"],
         dropout=mc["dropout"],
+        img_size=tuple(dc["img_size"]),
         pc_range=tuple(mc["pc_range"]),
         voxel_size=tuple(mc["voxel_size"]),
         out_size_factor=mc["out_size_factor"],
         point_feat_channels=mc.get("point_feat_channels", 4),
-        fusion_mode=mode_override or mc.get("fusion_mode", "full"),
+        fusion_mode=resolved_mode,
         use_pillar_net=True,
         pretrained_img=False,  # loading trained weights next; skip ImageNet fetch
     ).to(device)
 
-    ckpt = torch.load(checkpoint_path, map_location=device)
     state_dict = ckpt["model"] if "model" in ckpt else ckpt
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     log.info("Loaded checkpoint %s | missing=%d unexpected=%d",

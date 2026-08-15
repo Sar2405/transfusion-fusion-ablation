@@ -212,10 +212,15 @@ def train_one_epoch(
 def save_checkpoint(
     work_dir: Path, epoch: int, model: nn.Module,
     optimizer, scheduler, scaler: GradScaler, logger: logging.Logger,
+    fusion_mode: str = "full",
 ) -> None:
     base = model.module if isinstance(model, DDP) else model
     ckpt = {
         "epoch":     epoch,
+        # full/cls_only are parameter-identical and differ only in routing, so
+        # the architecture isn't recoverable from the weights alone — evaluate.py
+        # needs this to build the model the checkpoint was actually trained with.
+        "fusion_mode": fusion_mode,
         "model":     base.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
@@ -284,6 +289,10 @@ def main() -> None:
     )
 
     torch.manual_seed(args.seed + rank)
+    # Augmentation (rotation, scaling, flip, image resize/crop) draws from
+    # np.random, so it must be seeded too for reproducible runs at a fixed seed.
+    import numpy as _np
+    _np.random.seed(args.seed + rank)
 
     bev_h, bev_w = compute_bev_size(cfg)
     if is_main(rank):
@@ -398,7 +407,8 @@ def main() -> None:
 
         if is_main(rank):
             logger.info("Epoch [%d] avg_loss=%.4f", epoch, avg_loss)
-            save_checkpoint(work_dir, epoch, model, optimizer, scheduler, scaler, logger)
+            save_checkpoint(work_dir, epoch, model, optimizer, scheduler, scaler, logger,
+                            fusion_mode=cfg["model"].get("fusion_mode", "full"))
 
     if writer:
         writer.close()
