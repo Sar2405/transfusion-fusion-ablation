@@ -163,6 +163,7 @@ class NuScenesDataset(Dataset):
         max_voxels: int          = 30_000,
         img_size: Tuple[int,int] = (448, 800),   # (H, W)
         img_resize_range: Tuple[float,float] = (0.95, 1.35),
+        cbgs: bool = False,        # class-balanced sampling (train only)
         augment: bool            = False,
     ) -> None:
         super().__init__()
@@ -217,6 +218,12 @@ class NuScenesDataset(Dataset):
             "NuScenesDataset[%s/%s]: kept %d samples, dropped %d with missing "
             "sensor files%s", version, split, len(self.samples), dropped,
             "" if dropped == 0 else " (partial dataset copy detected)")
+        # CBGS resampling — training split only. Resampling val would corrupt
+        # the evaluation by changing the sample distribution it reports on.
+        self.cbgs_index = None
+        if cbgs and split == "train":
+            self._build_cbgs_index()
+
         if len(self.samples) == 0:
             raise RuntimeError(
                 f"No usable samples in split '{split}': all {len(candidates)} "
@@ -224,7 +231,71 @@ class NuScenesDataset(Dataset):
                 f"{self.nusc.dataroot}. Check --data-root and that samples/ "
                 f"contains the sensor blobs.")
 
+    def _build_cbgs_index(self) -> None:
+        """
+        Class-balanced resampling (CBGS, Zhu et al. 2019).
+
+        For each class, collect the samples containing it. A class holding a
+        fraction f of all annotations is under-represented by 1/(K*f) relative
+        to uniform, so its samples are repeated by that ratio. Frequent classes
+        get a ratio near or below 1 and are left alone (never down-sampled, to
+        avoid discarding data); rare classes are repeated many times.
+
+        Only the index is rebuilt — __getitem__, the model, and the losses are
+        unchanged. An epoch becomes longer, so wall-clock per epoch rises.
+        """
+        import logging
+        log = logging.getLogger(__name__)
+
+        # Uses the same category->label logic as _load_annotations (prefix
+        # match against NUSCENES_CATS, then cls2idx), so CBGS counts classes
+        # identically to how GT labels are actually built for training.
+        n_classes = len(self.class_names)
+        cls_to_samples = {c: [] for c in range(n_classes)}
+        counts = {c: 0 for c in range(n_classes)}
+
+        def _category_to_label(category_name: str):
+            for key, val in NUSCENES_CATS.items():
+                if category_name.startswith(key):
+                    return self.cls2idx[val]
+            return None   # unknown / ignored category, same as _load_annotations
+
+        for i, s in enumerate(self.samples):
+            present = set()
+            for ann_token in s["anns"]:
+                ann = self.nusc.get("sample_annotation", ann_token)
+                lbl = _category_to_label(ann["category_name"])
+                if lbl is not None:
+                    present.add(lbl)
+                    counts[lbl] += 1
+            for c in present:
+                cls_to_samples[c].append(i)
+
+        total = sum(counts.values())
+        if total == 0:
+            log.warning("CBGS: no annotations found; keeping the original index")
+            self.cbgs_index = list(range(len(self.samples)))
+            return
+
+        K = sum(1 for c in counts if counts[c] > 0)
+        index = []
+        for c, idxs in cls_to_samples.items():
+            if not idxs or counts[c] == 0:
+                continue
+            frac  = counts[c] / total
+            ratio = 1.0 / (K * frac)              # 1.0 = already balanced
+            reps  = max(1, int(round(ratio)))
+            index.extend(idxs * reps)
+            log.info("CBGS class %2d: %6d anns (%.3f%%), %5d samples x%d",
+                     c, counts[c], 100 * frac, len(idxs), reps)
+
+        self.cbgs_index = index
+        log.info("CBGS: epoch length %d -> %d samples (%.2fx)",
+                 len(self.samples), len(index), len(index) / len(self.samples))
+
     def __len__(self) -> int:
+        if getattr(self, "cbgs_index", None) is not None:
+            return len(self.cbgs_index)
         return len(self.samples)
 
     # ------------------------------------------------------------------ #
@@ -533,6 +604,8 @@ class NuScenesDataset(Dataset):
     # ------------------------------------------------------------------ #
 
     def __getitem__(self, idx: int) -> Dict:
+        if getattr(self, "cbgs_index", None) is not None:
+            idx = self.cbgs_index[idx]          # resampled -> real index
         sample = self.samples[idx]
 
         # Compute LiDAR sensor→ego and ego→global transforms once

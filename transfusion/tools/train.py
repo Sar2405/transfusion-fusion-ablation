@@ -311,7 +311,10 @@ def main() -> None:
         max_voxels=dc["max_voxels_train"],
         img_size=tuple(dc["img_size"]),
         augment=True,
+        cbgs=dc.get("cbgs", False),
     )
+    logger.info("CBGS %s — train epoch length: %d samples",
+               "enabled" if dc.get("cbgs", False) else "disabled", len(train_ds))
     sampler = DistributedSampler(train_ds, shuffle=True) if use_dist else None
     loader  = DataLoader(
         train_ds,
