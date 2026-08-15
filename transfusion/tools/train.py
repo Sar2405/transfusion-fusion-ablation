@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=None)
     p.add_argument("--epochs",     type=int, default=None)
     p.add_argument("--fusion-mode", type=str, default=None,
-                   choices=["full", "cls_only", "dual_stream"],
+                   choices=["full", "cls_only", "dual_stream", "interact"],
                    help="Override fusion philosophy for the 3-way ablation")
     p.add_argument("--seed",       type=int, default=42)
     p.add_argument("--local_rank", type=int, default=-1)

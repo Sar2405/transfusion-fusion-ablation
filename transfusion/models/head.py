@@ -302,10 +302,11 @@ class TransFusionHead(nn.Module):
         img_feat_w: int = 25,
         pc_range: Tuple[float, ...] = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0),
         dropout: float = 0.1,
-        fusion_mode: str = "full",   # "full" | "cls_only" | "dual_stream"
+        fusion_mode: str = "full",   # full|cls_only|dual_stream|interact
+        num_interact_layers: int = 4,  # `interact` mode: alternating L,I,L,I
     ) -> None:
         super().__init__()
-        assert fusion_mode in ("full", "cls_only", "dual_stream"), \
+        assert fusion_mode in ("full", "cls_only", "dual_stream", "interact"), \
             f"unknown fusion_mode: {fusion_mode}"
         self.fusion_mode  = fusion_mode
         self.num_queries  = num_queries
@@ -374,6 +375,30 @@ class TransFusionHead(nn.Module):
             ])
         else:
             self.lidar_stream = None
+
+        # --- "interact" mode: DeepInteraction-inspired alternating cascade ---
+        # Even layers attend to the LiDAR BEV map, odd layers to image
+        # features (mirrors "h'_c if l is odd, h'_p if l is even"). Both
+        # modalities reach the SAME final query, feeding both heads — image
+        # DOES influence regression here, unlike cls_only/dual_stream.
+        #
+        # REPLACES self.fusion_decoder in this mode (does not run alongside
+        # it) — DDP with find_unused_parameters=False crashes the first
+        # backward on any constructed-but-unused module.
+        if self.fusion_mode == "interact":
+            self.interact_layers = nn.ModuleList()
+            for i in range(num_interact_layers):
+                if i % 2 == 0:
+                    self.interact_layers.append(
+                        LiDARDecoderLayer(d_model, nhead, d_model * 4, dropout))
+                else:
+                    self.interact_layers.append(
+                        ImageFusionLayer(d_model, nhead, d_model * 4,
+                                         num_cameras, dropout,
+                                         img_h=img_feat_h, img_w=img_feat_w))
+            self.fusion_decoder = None
+        else:
+            self.interact_layers = None
 
         # --- Stage-2 final heads ---
         # For the controlled fusion-philosophy comparison we keep separate
@@ -557,10 +582,37 @@ class TransFusionHead(nn.Module):
         lidar_query = queries.clone()
 
         # ---- 6. Stage-2 fusion decoder ----
-        for layer in self.fusion_decoder:
-            queries = layer(queries, img_f, query_pos_emb, metric_centers,
-                            lidar2img, norm_centers)
-        fused_query = queries   # LiDAR + camera
+        if self.fusion_mode == "interact":
+            # Alternating LiDAR / image cascade (DeepInteraction §3.2). The
+            # box prediction is refreshed after each layer so the NEXT image
+            # layer projects using up-to-date centres — the "predictive
+            # interaction" element: layer l reads both the queries and the
+            # box prediction from layer l-1. Reuses final_box_head (built
+            # below) rather than adding per-layer heads, so no parameter can
+            # go unused under any OTHER fusion_mode's forward pass.
+            q = lidar_query
+            cur_norm, cur_metric = norm_centers, metric_centers
+            n_layers = len(self.interact_layers)
+            for i, layer in enumerate(self.interact_layers):
+                if i % 2 == 0:
+                    q = layer(q, bev_flat, query_pos_emb, bev_pos)
+                else:
+                    q = layer(q, img_f, query_pos_emb, cur_metric,
+                              lidar2img, cur_norm)
+                if i < n_layers - 1:
+                    step_box = self._assemble_box(self.final_box_head(q),
+                                                  ref_points)
+                    cur_norm = step_box[..., :3].detach()
+                    cur_metric = torch.empty_like(cur_norm)
+                    cur_metric[..., 0] = cur_norm[..., 0] * (pr[3]-pr[0]) + pr[0]
+                    cur_metric[..., 1] = cur_norm[..., 1] * (pr[4]-pr[1]) + pr[1]
+                    cur_metric[..., 2] = cur_norm[..., 2] * (pr[5]-pr[2]) + pr[2]
+            fused_query = q
+        else:
+            for layer in self.fusion_decoder:
+                queries = layer(queries, img_f, query_pos_emb, metric_centers,
+                                lidar2img, norm_centers)
+            fused_query = queries   # LiDAR + camera
 
         # ---- 7. Predict according to fusion philosophy ----
         if self.fusion_mode == "full":
@@ -571,6 +623,12 @@ class TransFusionHead(nn.Module):
             # DAL-style: camera informs classification only; box geometry comes
             # from the LiDAR-only representation (camera forbidden in regression).
             cls_src, box_src = fused_query, lidar_query
+
+        elif self.fusion_mode == "interact":
+            # Both modalities already folded into fused_query by the
+            # alternating cascade — both heads read it. Camera DOES reach
+            # box regression here, unlike cls_only/dual_stream.
+            cls_src, box_src = fused_query, fused_query
 
         elif self.fusion_mode == "dual_stream":
             # DeepInteraction-style: two maintained streams. The LiDAR stream

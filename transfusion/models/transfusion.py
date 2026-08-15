@@ -75,7 +75,8 @@ class TransFusion(nn.Module):
         frozen_img_stages: int          = 1,
         use_pillar_net: bool            = True,
         point_feat_channels: int        = 4,   # raw point dims: 4 (single-sweep) or 5 (+Δt)
-        fusion_mode: str                = "full",  # "full" | "cls_only" | "dual_stream"
+        fusion_mode: str                = "full",  # full|cls_only|dual_stream|interact
+        num_interact_layers: int        = 4,       # `interact` cascade depth
     ) -> None:
         super().__init__()
         self.num_cameras = num_cameras
@@ -150,6 +151,7 @@ class TransFusion(nn.Module):
             pc_range=pc_range,
             dropout=dropout,
             fusion_mode=fusion_mode,
+            num_interact_layers=num_interact_layers,
         )
 
     # ------------------------------------------------------------------ #

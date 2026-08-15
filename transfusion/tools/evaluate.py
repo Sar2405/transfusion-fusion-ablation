@@ -423,7 +423,7 @@ def main() -> int:
     ap.add_argument("--data-root", required=True)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--mode", default=None,
-                    choices=["full", "cls_only", "dual_stream"],
+                    choices=["full", "cls_only", "dual_stream", "interact"],
                     help="fusion_mode to build the model with; overrides the "
                          "config value. Must match how the checkpoint was "
                          "TRAINED, not left at the config default.")
