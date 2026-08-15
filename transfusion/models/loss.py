@@ -19,6 +19,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from .iou_cost import iou_matching_cost
+
 
 # ---------------------------------------------------------------------------
 # Loss primitives
@@ -101,10 +103,18 @@ class TransFusionMatcher(nn.Module):
         self,
         cost_class: float = 1.0,
         cost_bbox:  float = 1.0,
+        cost_iou:   float = 0.0,      # 0.0 => term is a no-op (rollback switch)
+        pc_range: Tuple[float, ...] = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0),
+        dim_order: str = "lw",        # index 3 = length, index 4 = width
+        iou_mode: str = "nearest",
     ) -> None:
         super().__init__()
         self.cost_class = cost_class
         self.cost_bbox  = cost_bbox
+        self.cost_iou   = cost_iou
+        self.pc_range   = pc_range
+        self.dim_order  = dim_order
+        self.iou_mode   = iou_mode
 
     @torch.no_grad()
     def forward(
@@ -140,6 +150,13 @@ class TransFusionMatcher(nn.Module):
                 self.cost_class * cls_cost +
                 self.cost_bbox  * bbox_cost
             )
+            if self.cost_iou > 0.0:
+                # TransFusion Eq. 1, lambda_3 term. iou_matching_cost already
+                # returns -IoU, so it is ADDED like the other cost terms.
+                cost = cost + self.cost_iou * iou_matching_cost(
+                    pb, gb, self.pc_range,
+                    dim_order=self.dim_order, mode=self.iou_mode,
+                )
             # Defensive guard: an occasionally unstable prediction (e.g. an
             # under-trained box head briefly producing a very large raw
             # log_l/log_w/log_h value) can make cdist emit inf/nan, which
@@ -286,6 +303,11 @@ class TransFusionLoss(nn.Module):
         gaussian_overlap: float = 0.1,
         min_radius: int         = 2,
         pc_range: Tuple[float, ...] = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0),
+        cost_class_w: float     = 0.15,
+        cost_bbox_w: float      = 0.25,
+        cost_iou_w: float       = 0.0,     # default OFF -> existing runs unchanged
+        dim_order: str          = "lw",
+        iou_mode: str           = "nearest",
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
@@ -299,7 +321,11 @@ class TransFusionLoss(nn.Module):
 
         self.heatmap_loss = GaussianFocalLoss()
         self.cls_loss     = SigmoidFocalLoss(alpha=focal_alpha, gamma=focal_gamma)
-        self.matcher      = TransFusionMatcher(cost_class=0.15, cost_bbox=0.25)
+        self.matcher      = TransFusionMatcher(
+            cost_class=cost_class_w, cost_bbox=cost_bbox_w,
+            cost_iou=cost_iou_w, pc_range=pc_range,
+            dim_order=dim_order, iou_mode=iou_mode,
+        )
 
     # ------------------------------------------------------------------ #
     def _cls_and_box_loss(

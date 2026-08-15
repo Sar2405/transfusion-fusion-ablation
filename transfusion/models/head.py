@@ -272,7 +272,7 @@ class TransFusionHead(nn.Module):
 
     Box parameterisation (10 values per query)
     ------------------------------------------
-    [x_norm, y_norm, z_norm, log_w, log_l, log_h, sin_yaw, cos_yaw, vx, vy]
+    [x_norm, y_norm, z_norm, log_l, log_w, log_h, sin_yaw, cos_yaw, vx, vy]
     """
 
     BOX_CODE_SIZE = 10
@@ -280,7 +280,7 @@ class TransFusionHead(nn.Module):
         "cls":    (10, 2),   # (out_dim, num_conv_layers)
         "center": (2, 2),    # x, y (normalised)
         "height": (1, 2),    # z
-        "dim":    (3, 2),    # log w, l, h
+        "dim":    (3, 2),    # log l, w, h
         "rot":    (2, 2),    # sin, cos
         "vel":    (2, 2),    # vx, vy
     }

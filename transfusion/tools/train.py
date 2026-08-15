@@ -370,6 +370,11 @@ def main() -> None:
         gaussian_overlap=lc["gaussian_overlap"],
         min_radius=lc["min_radius"],
         pc_range=tuple(mc["pc_range"]),
+        cost_class_w=lc.get("cost_class_w", 0.15),
+        cost_bbox_w=lc.get("cost_bbox_w", 0.25),
+        cost_iou_w=lc.get("cost_iou_w", 0.0),
+        dim_order=lc.get("dim_order", "lw"),
+        iou_mode=lc.get("iou_mode", "nearest"),
     ).to(device)
 
     # --- Optimiser + scheduler ---

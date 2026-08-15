@@ -73,13 +73,17 @@ loss:
   heatmap_weight: 1.0
   cls_weight: 1.0
   bbox_weight: 0.25
-  iou_weight: 0.0             # set > 0 to add IoU branch
   aux_loss: true              # stage-1 auxiliary loss
   aux_weight: 0.5
   focal_alpha: 0.25
   focal_gamma: 2.0
   gaussian_overlap: 0.1
   min_radius: 2
+  cost_class_w: 0.15
+  cost_bbox_w:  0.25
+  cost_iou_w:   0.25
+  dim_order:    "lw"
+  iou_mode:     "nearest"
 
 training:
   epochs: 20
